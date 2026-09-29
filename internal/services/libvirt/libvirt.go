@@ -66,6 +66,7 @@ type Service struct {
 	mutationGate                     interface {
 		EnterMutation(context.Context) (context.Context, func(), error)
 	}
+	vmFirewallOps vmFirewallOperator
 
 	preflightCreateVMTemplateFn func(
 		ctx context.Context,
@@ -82,6 +83,19 @@ type Service struct {
 	cleanupVMTemplateTargetFn func(ctx context.Context, rid uint)
 
 	GZFS *gzfs.Client
+}
+
+// vmFirewallOperator is the subset of the network service's VM firewall API
+// that the libvirt lifecycle needs. Defined here to avoid a circular import.
+type vmFirewallOperator interface {
+	ApplyVMFirewall(rid uint) error
+	DisableVMFirewall(rid uint) error
+}
+
+// SetVMFirewallOps wires the network service's VM firewall methods into the
+// libvirt lifecycle (start/stop/delete).
+func (s *Service) SetVMFirewallOps(ops vmFirewallOperator) {
+	s.vmFirewallOps = ops
 }
 
 func (s *Service) SetMutationAdmission(gate interface {
@@ -348,7 +362,21 @@ func (s *Service) writeVMJsonWithDB(db *gorm.DB, rid uint) error {
 		}
 	}
 
-	vmJsonData, err := json.MarshalIndent(vm, "", "  ")
+	// Include firewall metadata alongside the VM for migration.
+	var fwSettings *vmModels.VMFirewallSettings
+	if err := db.Where("vm_id = ?", vm.ID).First(&fwSettings).Error; err != nil {
+		fwSettings = nil // no settings row = disabled
+	}
+	var fwRules []vmModels.VMFirewallRule
+	db.Where("vm_id = ?", vm.ID).Order("priority ASC, id ASC").Find(&fwRules)
+
+	vmJSON := struct {
+		vmModels.VM
+		FirewallSettings *vmModels.VMFirewallSettings `json:"firewallSettings,omitempty"`
+		FirewallRules    []vmModels.VMFirewallRule    `json:"firewallRules,omitempty"`
+	}{VM: vm, FirewallSettings: fwSettings, FirewallRules: fwRules}
+
+	vmJsonData, err := json.MarshalIndent(vmJSON, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed_to_marshal_vm_to_json: %w", err)
 	}

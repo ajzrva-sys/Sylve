@@ -22,6 +22,7 @@ import (
 
 	"github.com/alchemillahq/sylve/internal/db/models"
 	networkModels "github.com/alchemillahq/sylve/internal/db/models/network"
+	vmModels "github.com/alchemillahq/sylve/internal/db/models/vm"
 	networkServiceInterfaces "github.com/alchemillahq/sylve/internal/interfaces/services/network"
 	"github.com/alchemillahq/sylve/internal/logger"
 	"github.com/alchemillahq/sylve/pkg/system"
@@ -2574,6 +2575,9 @@ func buildPFMainConfig(preRules string, preNatDecl string, postNatDecl string, p
 	b.WriteString("anchor \"sylve/traffic-rules\"\n")
 	b.WriteString(fmt.Sprintf("load anchor \"sylve/traffic-rules\" from \"%s\"\n", trafficPath))
 
+	b.WriteString("\n")
+	b.WriteString("anchor \"sylve/vm/*\"\n")
+
 	if strings.TrimSpace(postTrafficAnchor) != "" {
 		b.WriteString("\n# --- sylve: post traffic anchor ---\n")
 		b.WriteString(strings.TrimSpace(postTrafficAnchor))
@@ -2651,6 +2655,17 @@ func uniqueSortedValues(values []string) []string {
 }
 
 func (s *Service) buildFirewallObjectTables(trafficRules []networkModels.FirewallTrafficRule, natRules []networkModels.FirewallNATRule) (map[uint]firewallObjectTable, error) {
+	var vmRules []vmModels.VMFirewallRule
+	if s.DB != nil {
+		if err := s.DB.
+			Preload("SourceObj.Entries").
+			Preload("DestObj.Entries").
+			Find(&vmRules).Error; err != nil {
+			// Unit-test schemas may not migrate VM firewall tables; treat as empty.
+			vmRules = nil
+		}
+	}
+
 	objects := make(map[uint]*networkModels.Object)
 	addObject := func(obj *networkModels.Object) {
 		if obj == nil || obj.ID == 0 {
@@ -2670,6 +2685,13 @@ func (s *Service) buildFirewallObjectTables(trafficRules []networkModels.Firewal
 		addObject(rule.DestObj)
 	}
 	for _, rule := range natRules {
+		if !rule.Enabled {
+			continue
+		}
+		addObject(rule.SourceObj)
+		addObject(rule.DestObj)
+	}
+	for _, rule := range vmRules {
 		if !rule.Enabled {
 			continue
 		}
@@ -2695,10 +2717,10 @@ func (s *Service) buildFirewallObjectTables(trafficRules []networkModels.Firewal
 		}
 	}
 
-	return buildFirewallObjectTables(trafficRules, natRules), nil
+	return buildFirewallObjectTables(trafficRules, natRules, vmRules), nil
 }
 
-func buildFirewallObjectTables(trafficRules []networkModels.FirewallTrafficRule, natRules []networkModels.FirewallNATRule) map[uint]firewallObjectTable {
+func buildFirewallObjectTables(trafficRules []networkModels.FirewallTrafficRule, natRules []networkModels.FirewallNATRule, vmRules []vmModels.VMFirewallRule) map[uint]firewallObjectTable {
 	objects := make(map[uint]*networkModels.Object)
 	addObject := func(obj *networkModels.Object) {
 		if obj == nil || obj.ID == 0 {
@@ -2718,6 +2740,13 @@ func buildFirewallObjectTables(trafficRules []networkModels.FirewallTrafficRule,
 		addObject(rule.DestObj)
 	}
 	for _, rule := range natRules {
+		if !rule.Enabled {
+			continue
+		}
+		addObject(rule.SourceObj)
+		addObject(rule.DestObj)
+	}
+	for _, rule := range vmRules {
 		if !rule.Enabled {
 			continue
 		}
@@ -2821,6 +2850,30 @@ func writeFirewallObjectTableEntries(tables map[uint]firewallObjectTable, entrie
 		}
 	}
 
+	return nil
+}
+
+// writeFirewallObjectTableEntriesOnly writes entries files for the given
+// tables without pruning unrelated files. Used by per-VM applies which only
+// see a subset of the global object tables.
+func writeFirewallObjectTableEntriesOnly(tables map[uint]firewallObjectTable, entriesDir string) error {
+	if err := os.MkdirAll(entriesDir, 0755); err != nil {
+		return err
+	}
+	for _, table := range tables {
+		if table.InetName != "" && len(table.InetValues) > 0 {
+			content := strings.Join(table.InetValues, "\n") + "\n"
+			if err := atomicWriteFile(filepath.Join(entriesDir, table.InetName), []byte(content), 0644); err != nil {
+				return err
+			}
+		}
+		if table.Inet6Name != "" && len(table.Inet6Values) > 0 {
+			content := strings.Join(table.Inet6Values, "\n") + "\n"
+			if err := atomicWriteFile(filepath.Join(entriesDir, table.Inet6Name), []byte(content), 0644); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

@@ -305,6 +305,8 @@ func (s *Service) syncVMNetworksWithDB(ctx context.Context, db *gorm.DB, rid uin
 		macElement.CreateAttr("address", mac)
 		sourceElement := iface.CreateElement("source")
 		sourceElement.CreateAttr("bridge", sw.Bridge)
+		targetElement := iface.CreateElement("target")
+		targetElement.CreateAttr("dev", VMTapName(rid, network.ID))
 		modelElement := iface.CreateElement("model")
 		modelElement.CreateAttr("type", emulation)
 	}

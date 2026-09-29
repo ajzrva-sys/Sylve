@@ -68,6 +68,8 @@ var (
 type firewallCounterKey struct {
 	RuleType string
 	RuleID   uint
+	// VMID disambiguates per-VM rule IDs (RuleType == "vm"). Zero for traffic/nat.
+	VMID uint
 }
 
 type pfLogCaptureBackend uint8
@@ -94,6 +96,8 @@ type firewallTelemetryRuntime struct {
 	ruleNames          map[firewallCounterKey]string
 	trafficRuleNumbers map[int]uint
 	natRuleNumbers     map[int]uint
+	// vmRuleNumbers maps rid → (PF rule number → DB rule ID) for nested VM anchors.
+	vmRuleNumbers map[uint]map[int]uint
 
 	countersUpdatedAt  time.Time
 	countersAvailable  bool
@@ -127,6 +131,7 @@ func newFirewallTelemetryRuntime() *firewallTelemetryRuntime {
 		ruleNames:          make(map[firewallCounterKey]string),
 		trafficRuleNumbers: make(map[int]uint),
 		natRuleNumbers:     make(map[int]uint),
+		vmRuleNumbers:      make(map[uint]map[int]uint),
 		liveHits:           make([]networkServiceInterfaces.FirewallLiveHitEvent, 0, 1024),
 		liveSourceStatus:   "unavailable",
 	}
@@ -260,6 +265,19 @@ func (s *Service) isFirewallServiceEnabledForTelemetry() bool {
 	return enabled
 }
 
+// hasEnabledVMFirewall reports whether any VM firewall is active. VM anchors
+// log through pflog even when the host firewall service is disabled.
+func (s *Service) hasEnabledVMFirewall() bool {
+	if s.DB == nil {
+		return false
+	}
+	var count int64
+	if err := s.DB.Table("vm_firewall_settings").Where("enabled = ?", true).Count(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
+}
+
 func parseLabeledRuleCounters(output string, labelPattern *regexp.Regexp) (map[uint]trafficRuleCounterTotals, map[int]uint) {
 	counters := make(map[uint]trafficRuleCounterTotals)
 	ruleNumberToID := make(map[int]uint)
@@ -363,6 +381,27 @@ func (s *Service) updateFirewallRuleNames() {
 		}
 	}
 
+	// VM rule IDs are per-VM; key names by (VMID=rid, RuleID).
+	type vmRow struct {
+		ID   uint   `gorm:"column:id"`
+		VMID uint   `gorm:"column:vm_id"`
+		RID  uint   `gorm:"column:rid"`
+		Name string `gorm:"column:name"`
+	}
+	var vmRows []vmRow
+	if err := s.DB.Raw(
+		`SELECT vm_firewall_rules.id AS id, vm_firewall_rules.vm_id AS vm_id,
+		        vms.rid AS rid, vm_firewall_rules.name AS name
+		 FROM vm_firewall_rules
+		 JOIN vms ON vms.id = vm_firewall_rules.vm_id`,
+	).Scan(&vmRows).Error; err != nil {
+		logger.L.Warn().Err(err).Msg("failed to load vm firewall rule names")
+	} else {
+		for _, r := range vmRows {
+			names[firewallCounterKey{RuleType: "vm", RuleID: r.ID, VMID: r.RID}] = strings.TrimSpace(r.Name)
+		}
+	}
+
 	rt := s.getFirewallTelemetryRuntime()
 	rt.mu.Lock()
 	rt.ruleNames = names
@@ -387,6 +426,9 @@ func (s *Service) sampleFirewallCountersLocked() {
 		rt.countersError = "firewall_service_disabled"
 		rt.countersLastWarn = ""
 		rt.mu.Unlock()
+		// VM firewalls can run without the host firewall service; keep their
+		// PF rule-number map fresh so live-log hits still resolve.
+		s.sampleVMRuleNumbersLocked()
 		return
 	}
 
@@ -459,6 +501,101 @@ func (s *Service) sampleFirewallCountersLocked() {
 	if warnUnavailable {
 		logger.L.Warn().Msgf("firewall counter sample unavailable: %s", currentError)
 	}
+
+	s.sampleVMRuleNumbersLocked()
+}
+
+// parseVMRuleNumbersFromPF extracts PF rule number → DB rule ID from one
+// `pfctl -a sylve/vm/<rid> -vvsr` dump using the sylve_vm_<rid>_trf_<id> label.
+func parseVMRuleNumbersFromPF(output string) map[int]uint {
+	ruleNumberToID := make(map[int]uint)
+	currentRuleNumber := 0
+	currentRuleNumberSet := false
+
+	for _, rawLine := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		if ruleMatch := pfVerboseRuleNumberPattern.FindStringSubmatch(line); len(ruleMatch) == 2 {
+			if n, err := strconv.Atoi(ruleMatch[1]); err == nil {
+				currentRuleNumber = n
+				currentRuleNumberSet = true
+			} else {
+				currentRuleNumberSet = false
+			}
+		}
+		labelMatch := pfVMRuleLabelPattern.FindStringSubmatch(line)
+		if len(labelMatch) < 3 || !currentRuleNumberSet {
+			continue
+		}
+		ruleID, err := strconv.ParseUint(labelMatch[2], 10, 64)
+		if err != nil {
+			continue
+		}
+		ruleNumberToID[currentRuleNumber] = uint(ruleID)
+	}
+	return ruleNumberToID
+}
+
+// sampleVMRuleNumbersLocked refreshes rid → (PF rule# → DB rule ID) for every
+// enabled VM firewall so live-log hits can be resolved back to VM rules.
+func (s *Service) sampleVMRuleNumbersLocked() {
+	var rids []uint
+	if err := s.DB.Raw(
+		`SELECT vms.rid FROM vm_firewall_settings
+		 JOIN vms ON vms.id = vm_firewall_settings.vm_id
+		 WHERE vm_firewall_settings.enabled = ?`,
+		true,
+	).Scan(&rids).Error; err != nil {
+		logger.L.Warn().Err(err).Msg("failed to list enabled VM firewalls for live-log mapping")
+		return
+	}
+
+	mapping := make(map[uint]map[int]uint, len(rids))
+	for _, rid := range rids {
+		output, err := vmFirewallRunCommand("/sbin/pfctl", "-a", VMAnchorName(rid), "-vvsr")
+		if err != nil {
+			continue
+		}
+		mapping[rid] = parseVMRuleNumbersFromPF(output)
+	}
+
+	rt := s.getFirewallTelemetryRuntime()
+	rt.mu.Lock()
+	rt.vmRuleNumbers = mapping
+	rt.mu.Unlock()
+}
+
+// parseRIDFromRuleset extracts the VM RID from a nested anchor ruleset name.
+// FreeBSD pflog may report the full path ("sylve/vm/100"), a path suffix
+// ("vm/100"), or just the terminal anchor component ("100").
+func parseRIDFromRuleset(ruleset string) (uint, bool) {
+	trimmed := strings.TrimSpace(strings.ToLower(ruleset))
+	if trimmed == "" {
+		return 0, false
+	}
+
+	// Full or partial anchor path: .../vm/<rid>...
+	if idx := strings.Index(trimmed, "vm/"); idx >= 0 {
+		rest := trimmed[idx+len("vm/"):]
+		if i := strings.IndexAny(rest, "/ "); i >= 0 {
+			rest = rest[:i]
+		}
+		if n, err := strconv.ParseUint(rest, 10, 64); err == nil && n > 0 {
+			return uint(n), true
+		}
+	}
+
+	// Bare terminal component ("100" or ".../100").
+	rest := trimmed
+	if i := strings.LastIndexAny(rest, "/:"); i >= 0 {
+		rest = rest[i+1:]
+	}
+	if n, err := strconv.ParseUint(rest, 10, 64); err == nil && n > 0 {
+		return uint(n), true
+	}
+	return 0, false
 }
 
 func (s *Service) cumulativeCounterTotalsByType(ruleType string) (map[uint]trafficRuleCounterTotals, time.Time) {
@@ -684,6 +821,22 @@ func (s *Service) resolveFirewallRuleReference(parsed parsedFirewallLogLine) (st
 			return "nat", ruleID, runtime.ruleNames[key], true
 		}
 		return "", 0, "", false
+	}
+
+	// Nested per-VM anchors: ruleset may be "sylve/vm/<rid>", "vm/<rid>", or
+	// just "<rid>" depending on the FreeBSD pflog ruleset field.
+	if rid, ok := parseRIDFromRuleset(ruleset); ok {
+		if mapping, ok := runtime.vmRuleNumbers[rid]; ok {
+			if ruleID, found := resolveRuleIDByNumbers(mapping, parsed.SubruleNumber, parsed.RuleNumber); found {
+				key := firewallCounterKey{RuleType: "vm", RuleID: ruleID, VMID: rid}
+				return "vm", ruleID, runtime.ruleNames[key], true
+			}
+		}
+		// Known VM rid but no mapping hit — do not fall through to host maps
+		// (those rule numbers live in a different namespace).
+		if _, known := runtime.vmRuleNumbers[rid]; known {
+			return "", 0, "", false
+		}
 	}
 
 	// If ruleset metadata is unavailable, use action semantics to choose the safer default.
@@ -1073,7 +1226,7 @@ func (s *Service) runFirewallLogWatcher(ctx context.Context) {
 		default:
 		}
 
-		if !s.isFirewallServiceEnabledForTelemetry() {
+		if !s.isFirewallServiceEnabledForTelemetry() && !s.hasEnabledVMFirewall() {
 			s.setFirewallLiveSourceStatus("unavailable", "firewall_service_disabled")
 			select {
 			case <-ctx.Done():

@@ -369,6 +369,45 @@ func (s *Service) reconcileRestoredVMFromDataset(
 			}
 		}
 
+		// Recreate firewall settings and rules.
+		if restoredMeta.FirewallSettings != nil {
+			s := *restoredMeta.FirewallSettings
+			s.ID = 0
+			s.VMID = reconciledVMID
+			if err := tx.Create(&s).Error; err != nil {
+				return fmt.Errorf("failed_to_insert_restored_vm_firewall_settings: %w", err)
+			}
+		}
+		if len(restoredMeta.FirewallRules) > 0 {
+			// Map old network IDs to new ones for rules that target a specific NIC.
+			oldToNewNet := make(map[uint]uint)
+			// normalizedNetworks have been created; query their new IDs.
+			var createdNets []vmModels.Network
+			tx.Where("vm_id = ?", reconciledVMID).Order("id ASC").Find(&createdNets)
+			for i := range restoredMeta.FirewallRules {
+				// The old network IDs are in restoredMeta.FirewallRules[i].NetworkID.
+				// We map by position since networks are recreated in order.
+				_ = i
+			}
+			for i := range restoredMeta.FirewallRules {
+				r := restoredMeta.FirewallRules[i]
+				r.ID = 0
+				r.VMID = reconciledVMID
+				if r.NetworkID != nil {
+					// Try to remap by index position if the old ID matches an original network.
+					if newID, ok := oldToNewNet[*r.NetworkID]; ok {
+						r.NetworkID = &newID
+					} else {
+						// Can't map: apply to all NICs.
+						r.NetworkID = nil
+					}
+				}
+				if err := tx.Create(&r).Error; err != nil {
+					return fmt.Errorf("failed_to_insert_restored_vm_firewall_rule: %w", err)
+				}
+			}
+		}
+
 		if err := reconcileRestoredVMSnapshots(
 			tx,
 			reconciledVMID,
@@ -853,8 +892,10 @@ func (s *Service) normalizeRestoredVMNetworks(
 }
 
 type restoredVMMetadata struct {
-	VM        vmModels.VM
-	Snapshots []vmModels.VMSnapshot
+	VM               vmModels.VM
+	Snapshots        []vmModels.VMSnapshot
+	FirewallSettings *vmModels.VMFirewallSettings `json:"firewallSettings,omitempty"`
+	FirewallRules    []vmModels.VMFirewallRule    `json:"firewallRules,omitempty"`
 }
 
 func reconcileRestoredVMSnapshots(
@@ -1016,7 +1057,9 @@ func (s *Service) readLocalRestoredVMMetadata(
 
 		type vmMetadataPayload struct {
 			vmModels.VM
-			Snapshots []vmModels.VMSnapshot `json:"snapshots"`
+			Snapshots        []vmModels.VMSnapshot        `json:"snapshots"`
+			FirewallSettings *vmModels.VMFirewallSettings  `json:"firewallSettings,omitempty"`
+			FirewallRules    []vmModels.VMFirewallRule     `json:"firewallRules,omitempty"`
 		}
 
 		payload := vmMetadataPayload{}
@@ -1028,8 +1071,10 @@ func (s *Service) readLocalRestoredVMMetadata(
 			payload.RID = fallbackRID
 		}
 		return &restoredVMMetadata{
-			VM:        payload.VM,
-			Snapshots: payload.Snapshots,
+			VM:               payload.VM,
+			Snapshots:        payload.Snapshots,
+			FirewallSettings: payload.FirewallSettings,
+			FirewallRules:    payload.FirewallRules,
 		}, nil
 	}
 

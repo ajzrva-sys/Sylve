@@ -500,7 +500,7 @@ func isFirewallLiveHitAction(action string) bool {
 // @Failure 401 {object} internal.APIResponse[any] "Unauthorized"
 // @Param cursor query int false "Return hits after this cursor; 0 initializes the live stream" minimum(0) default(0)
 // @Param limit query int false "Maximum hits to return; values above 2000 are capped" minimum(1) maximum(2000) default(200)
-// @Param ruleType query string false "Rule type" Enums(traffic,nat)
+// @Param ruleType query string false "Rule type" Enums(traffic,nat,vm)
 // @Param ruleId query int false "Rule ID" minimum(1)
 // @Param action query string false "PF action" Enums(pass,block,scrub,nat,binat,rdr)
 // @Param direction query string false "Packet direction" Enums(in,out)
@@ -535,7 +535,7 @@ func ListFirewallLiveHits(svc *network.Service) gin.HandlerFunc {
 
 		filter := &networkServiceInterfaces.FirewallLiveHitsFilter{}
 		if ruleType := strings.ToLower(strings.TrimSpace(c.Query("ruleType"))); ruleType != "" {
-			if ruleType != "traffic" && ruleType != "nat" {
+			if ruleType != "traffic" && ruleType != "nat" && ruleType != "vm" {
 				writeFirewallLiveHitsQueryError(c, "invalid_rule_type", "invalid_firewall_live_hits_rule_type")
 				return
 			}

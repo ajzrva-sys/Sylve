@@ -231,6 +231,7 @@ func daemonAction(ctx context.Context, c *cli.Command) error {
 	libvirtSvc.SetMutationAdmission(clusterSvc)
 	lifecycleSvc.SetMutationAdmission(clusterSvc)
 	zeltaS.SetMutationAdmission(clusterSvc)
+	libvirtSvc.SetVMFirewallOps(nS.(*networkService.Service))
 	migrationSvc := serviceRegistry.MigrationService
 	migrationSvc.SetMutationAdmission(clusterSvc)
 	utilitiesSvc.SetMutationAdmission(clusterSvc)

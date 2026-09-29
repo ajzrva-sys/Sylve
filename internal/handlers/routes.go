@@ -645,6 +645,18 @@ func RegisterRoutes(r *gin.Engine,
 		vm.PUT("/:rid/options/tpm", vmHandlers.ModifyTPM(libvirtService))
 		vm.GET("/:rid/guest-agent", vmHandlers.GetQemuGuestAgentInfo(libvirtService))
 
+		fw := vm.Group("/:rid/firewall")
+		fw.Use(middleware.RequireLocalAdminForWrites(authService))
+		{
+			fw.GET("", networkHandlers.GetVMFirewallSettings(networkService))
+			fw.PUT("", networkHandlers.UpdateVMFirewallSettings(networkService))
+			fw.GET("/traffic", networkHandlers.ListVMFirewallRules(networkService))
+			fw.GET("/traffic/counters", networkHandlers.ListVMFirewallRuleCounters(networkService))
+			fw.POST("/traffic", networkHandlers.CreateVMFirewallRule(networkService))
+			fw.PUT("/traffic/:id", networkHandlers.EditVMFirewallRule(networkService))
+			fw.DELETE("/traffic/:id", networkHandlers.DeleteVMFirewallRule(networkService))
+		}
+
 		vm.GET("/:rid/console", middleware.RequireLocalAdmin(authService), vmHandlers.HandleLibvirtTerminalWebsocket(libvirtService))
 	}
 

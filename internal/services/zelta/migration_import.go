@@ -333,12 +333,16 @@ func (s *Service) writeVMMetadataToDataset(ctx context.Context, dataset string, 
 
 	type vmMetadataPayload struct {
 		vmModels.VM
-		Snapshots []vmModels.VMSnapshot `json:"snapshots"`
+		Snapshots        []vmModels.VMSnapshot       `json:"snapshots"`
+		FirewallSettings *vmModels.VMFirewallSettings `json:"firewallSettings,omitempty"`
+		FirewallRules    []vmModels.VMFirewallRule    `json:"firewallRules,omitempty"`
 	}
 
 	payload := vmMetadataPayload{
-		VM:        meta.VM,
-		Snapshots: meta.Snapshots,
+		VM:               meta.VM,
+		Snapshots:        meta.Snapshots,
+		FirewallSettings: meta.FirewallSettings,
+		FirewallRules:    meta.FirewallRules,
 	}
 
 	raw, err := json.MarshalIndent(payload, "", "  ")

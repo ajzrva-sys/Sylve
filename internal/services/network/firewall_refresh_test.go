@@ -515,7 +515,7 @@ func TestRenderTrafficRulesSplitsMixedFamilies(t *testing.T) {
 		},
 	}
 
-	tables := buildFirewallObjectTables(rules, nil)
+	tables := buildFirewallObjectTables(rules, nil, nil)
 	rendered, err := svc.renderTrafficRules(rules, tables)
 	if err != nil {
 		t.Fatalf("unexpected render error: %v", err)
@@ -1372,7 +1372,7 @@ func TestBuildFirewallObjectTablesDeterministicAndFiltered(t *testing.T) {
 		},
 	}
 
-	tables := buildFirewallObjectTables(rules, nil)
+	tables := buildFirewallObjectTables(rules, nil, nil)
 	table, ok := tables[8]
 	if !ok {
 		t.Fatal("expected object table for object ID 8")
@@ -1714,7 +1714,7 @@ func TestRenderTrafficRulesSkipsRuleWhenObjectTableEmpty(t *testing.T) {
 		},
 	}
 
-	tables := buildFirewallObjectTables(rules, nil)
+	tables := buildFirewallObjectTables(rules, nil, nil)
 	rendered, err := svc.renderTrafficRules(rules, tables)
 	if err != nil {
 		t.Fatalf("unexpected render error: %v", err)
@@ -1753,7 +1753,7 @@ func TestRenderNATRulesUsesObjectTables(t *testing.T) {
 		},
 	}
 
-	tables := buildFirewallObjectTables(nil, rules)
+	tables := buildFirewallObjectTables(nil, rules, nil)
 	rendered, err := svc.renderNATRules(rules, tables)
 	if err != nil {
 		t.Fatalf("unexpected render error: %v", err)
@@ -1877,7 +1877,7 @@ func TestBuildFirewallObjectTablesIgnoresDisabledRules(t *testing.T) {
 		},
 	}
 
-	tables := buildFirewallObjectTables(rules, nil)
+	tables := buildFirewallObjectTables(rules, nil, nil)
 	if _, ok := tables[9]; ok {
 		t.Fatal("expected disabled rule object table to be omitted")
 	}
@@ -2572,7 +2572,7 @@ func TestNATPolicyRoutingRulesPrependTrafficRules(t *testing.T) {
 		},
 	}
 
-	objectTables := buildFirewallObjectTables(trafficRules, natRules)
+	objectTables := buildFirewallObjectTables(trafficRules, natRules, nil)
 	policyRendered, err := svc.renderNATPolicyRoutingRules(natRules, objectTables)
 	if err != nil {
 		t.Fatalf("unexpected policy render error: %v", err)
@@ -2628,7 +2628,7 @@ func TestRenderNATRulesSkipsIncompatibleFamilyForRawTranslateTarget(t *testing.T
 		},
 	}
 
-	tables := buildFirewallObjectTables(nil, rules)
+	tables := buildFirewallObjectTables(nil, rules, nil)
 	rendered, err := svc.renderNATRules(rules, tables)
 	if err != nil {
 		t.Fatalf("unexpected render error: %v", err)
@@ -4090,7 +4090,7 @@ func TestIntegrationPFConfigValidation(t *testing.T) {
 				DestRaw: "any",
 			},
 		}
-		tables := buildFirewallObjectTables(nil, rules)
+		tables := buildFirewallObjectTables(nil, rules, nil)
 		tablesRendered := renderFirewallObjectTables(tables)
 		config := buildPFMainConfig("", "", "", "", "", "", tablesRendered, "/tmp/nat.conf", "/tmp/traffic.conf")
 		if !strings.Contains(config, `table <sylve_obj_8_inet> persist`) {
@@ -4103,7 +4103,7 @@ func TestIntegrationPFConfigValidation(t *testing.T) {
 func validateGeneratedConfig(t *testing.T, svc *Service, natRules []networkModels.FirewallNATRule, trafficRules []networkModels.FirewallTrafficRule, preRules, postRules string) {
 	t.Helper()
 
-	tables := buildFirewallObjectTables(trafficRules, natRules)
+	tables := buildFirewallObjectTables(trafficRules, natRules, nil)
 
 	natRendered, err := svc.renderNATRules(natRules, tables)
 	if err != nil {

@@ -104,7 +104,7 @@ type FirewallNATRuleCounter struct {
 type FirewallLiveHitEvent struct {
 	Cursor    int64     `json:"cursor"`
 	Timestamp time.Time `json:"timestamp"`
-	RuleType  string    `json:"ruleType"` // traffic|nat
+	RuleType  string    `json:"ruleType"` // traffic|nat|vm
 	RuleID    uint      `json:"ruleId"`
 	RuleName  string    `json:"ruleName"`
 	Action    string    `json:"action"`
@@ -115,7 +115,7 @@ type FirewallLiveHitEvent struct {
 }
 
 type FirewallLiveHitsFilter struct {
-	RuleType  string `json:"ruleType"`  // traffic|nat
+	RuleType  string `json:"ruleType"`  // traffic|nat|vm
 	RuleID    *uint  `json:"ruleId"`    // optional
 	Action    string `json:"action"`    // optional
 	Direction string `json:"direction"` // in|out
@@ -136,4 +136,46 @@ type FirewallLiveHitsResponse struct {
 	SourceStatus string                 `json:"sourceStatus"` // ok|unavailable
 	SourceError  string                 `json:"sourceError"`
 	UpdatedAt    time.Time              `json:"updatedAt"`
+}
+
+// --- VM firewall DTOs ---
+
+type UpsertVMFirewallSettingsRequest struct {
+	Enabled         *bool  `json:"enabled"`
+	DefaultInbound  string `json:"defaultInbound" binding:"omitempty,oneof=pass block"`
+	DefaultOutbound string `json:"defaultOutbound" binding:"omitempty,oneof=pass block"`
+	LogDefault      *bool  `json:"logDefault"`
+	AllowDHCP       *bool  `json:"allowDhcp"`
+	AllowNDP        *bool  `json:"allowNdp"`
+	AllowPing       *bool  `json:"allowPing"`
+}
+
+type UpsertVMFirewallRuleRequest struct {
+	Name        string `json:"name" binding:"required,max=128"`
+	Description string `json:"description" binding:"max=2048"`
+	Enabled     *bool  `json:"enabled"`
+	Log         *bool  `json:"log"`
+	Quick       *bool  `json:"quick"`
+	Priority    *int   `json:"priority" binding:"omitempty,gt=0,lte=1024"`
+	Action      string `json:"action" binding:"required,oneof=pass block"`
+	Direction   string `json:"direction" binding:"required,oneof=in out"`
+	Protocol    string `json:"protocol" binding:"omitempty,oneof=any tcp udp icmp ipv6-icmp"`
+	Family      string `json:"family" binding:"omitempty,oneof=any inet inet6"`
+	NetworkID   *uint  `json:"networkId" binding:"omitempty,gt=0"`
+
+	SourceRaw    string `json:"sourceRaw" binding:"max=2048"`
+	SourceObjID  *uint  `json:"sourceObjId" binding:"omitempty,gt=0"`
+	DestRaw      string `json:"destRaw" binding:"max=2048"`
+	DestObjID    *uint  `json:"destObjId" binding:"omitempty,gt=0"`
+	SrcPortsRaw  string `json:"srcPortsRaw" binding:"max=2048"`
+	SrcPortObjID *uint  `json:"srcPortObjId" binding:"omitempty,gt=0"`
+	DstPortsRaw  string `json:"dstPortsRaw" binding:"max=2048"`
+	DstPortObjID *uint  `json:"dstPortObjId" binding:"omitempty,gt=0"`
+}
+
+type VMFirewallRuleCounter struct {
+	ID        uint      `json:"id"`
+	Packets   uint64    `json:"packets"`
+	Bytes     uint64    `json:"bytes"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }

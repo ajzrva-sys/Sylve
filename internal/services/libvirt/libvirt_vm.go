@@ -1230,6 +1230,13 @@ func (s *Service) startVM(domain *libvirt.Domain, vm vmModels.VM) error {
 		return err
 	}
 
+	// Apply per-VM PF anchor before the domain runs (fail closed when enabled).
+	if s.vmFirewallOps != nil {
+		if err := s.vmFirewallOps.ApplyVMFirewall(vm.RID); err != nil {
+			return fmt.Errorf("failed_to_apply_vm_firewall: %w", err)
+		}
+	}
+
 	if err := s.conn().DomainCreate(*domain); err != nil {
 		return fmt.Errorf("failed_to_start_domain: %w", err)
 	}
@@ -1270,6 +1277,14 @@ func (s *Service) shutdownVM(domain *libvirt.Domain, vm vmModels.VM) error {
 	}
 
 	logger.L.Info().Uint("rid", vm.RID).Msg("VM shut down via libvirt")
+
+	// Flush the per-VM PF anchor after the domain stops.
+	if s.vmFirewallOps != nil {
+		if err := s.vmFirewallOps.DisableVMFirewall(vm.RID); err != nil {
+			logger.L.Warn().Err(err).Uint("rid", vm.RID).Msg("failed to flush VM firewall anchor after shutdown")
+		}
+	}
+
 	return nil
 }
 
@@ -1339,6 +1354,13 @@ func (s *Service) destroyVM(domain *libvirt.Domain, vm vmModels.VM) error {
 		state, _, stateErr := s.conn().DomainGetState(*domain, 0)
 		if stateErr != nil || state != int32(libvirt.DomainShutoff) {
 			return fmt.Errorf("failed_to_force_destroy: %w", err)
+		}
+	}
+
+	// Flush the per-VM PF anchor after the domain stops.
+	if s.vmFirewallOps != nil {
+		if err := s.vmFirewallOps.DisableVMFirewall(vm.RID); err != nil {
+			logger.L.Warn().Err(err).Uint("rid", vm.RID).Msg("failed to flush VM firewall anchor after destroy")
 		}
 	}
 

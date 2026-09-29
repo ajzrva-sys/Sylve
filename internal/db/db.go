@@ -145,6 +145,8 @@ func SetupDatabase(cfg *internal.SylveConfig, isTest bool) *gorm.DB {
 		&vmModels.VMCPUPinning{},
 		&vmModels.VMSnapshot{},
 		&vmModels.VMTemplate{},
+		&vmModels.VMFirewallSettings{},
+		&vmModels.VMFirewallRule{},
 		&vmModels.VM{},
 
 		&jailModels.Network{},
